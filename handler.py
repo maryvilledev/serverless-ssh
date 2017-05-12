@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import errno
 
 import boto3
 import paramiko
@@ -79,6 +80,29 @@ def poll_ssh(event, context):
 
 
 def ssh_completed(event, context):
+    logpath = '/tmp/'+event.get('id')+'.log'
+    client = get_ssh_client(
+        event.get('user'),
+        event.get('password'),
+        event.get('host'),
+        event.get('port', 22),
+        event.get('key'))
+
+    sftp = client.open_sftp()
+    try:
+        sftp.stat(logpath)
+        sftp.get(logpath, logpath)
+    except IOError as e:
+        if e.errno == errno.ENOENT:
+            print('Could not locate log on', event.get('host'),
+                  'for execution', event.get('id'))
+        else:
+            print('Could not retrieve log on', event.get('host'),
+                  'for execution', event.get('id'))
+
+    print('Uploading log file to S3')
+    s3.upload_file(logpath, os.getenv('LOG_BUCKET'), event.get('id')+'.log')
+
     print("Writing metadata to DynamoDB")
     dynamo.put_item(
         TableName=os.getenv('DYNAMODB_TABLE'),
@@ -88,25 +112,27 @@ def ssh_completed(event, context):
             "key": {'S': event.get('key')},
             "user": {'S': event.get('user')},
             "port": {'N': str(event.get('port', 22))},
+            "started": {'N': str(event.get('started'))},
+            "completed": {'N': str(time.time())},
         }
     )
 
 
 def run_ssh_command(event, context):
-    host = event.get('host')
     event_id = context.aws_request_id
+    exec_started = time.time()
 
     script_path = write_local_script(event_id, event.get('command'))
 
     client = get_ssh_client(
         event.get('user'),
         event.get('password'),
-        host,
+        event.get('host'),
         event.get('port', 22),
         event.get('key'))
 
     # Copy the script over
-    print("Copying script to ", host)
+    print("Copying script to ", event.get('host'))
     sftp = client.open_sftp()
     sftp.put(script_path, script_path)
     sftp.chmod(script_path, 0o0755)
@@ -119,23 +145,25 @@ def run_ssh_command(event, context):
         environment=event.get('environment'))
     client.close()
 
-    # if event.get('password'):
-    #     s3.put_object(
-    #         Body=bytes(event.get('password')),
-    #         ContentType='text/plain',
-    #         Key=host+'.password')
-    #     print("Stored password in S3")
+    if event.get('password'):
+        s3.put_object(
+            Body=bytes(event.get('password')),
+            Bucket=os.getenv('CRED_BUCKET'),
+            ContentType='text/plain',
+            Key=event.get('host')+'.password')
+        print("Stored password in S3")
 
     sfn.start_execution(
         stateMachineArn=os.getenv('STATE_MACHINE_ARN'),
         name='ssh-poll-'+event_id,
         input=json.dumps({
             'id': event_id,
-            'host': host,
+            'host': event.get('host'),
             'port': event.get('port', 22),
             'user': event.get('user'),
             'password': event.get('password'),
             'key': event.get('key'),
+            'started': exec_started,
             'complete': False,
             'poll_iteration': 0
         })

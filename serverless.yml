@@ -4,6 +4,7 @@ frameworkVersion: ">=1.1.0 <2.0.0"
 
 custom:
   cred_bucket: sssh-key-storage
+  log_bucket: sssh-log-storage
   table: sssh-state-table
   accountId: 1234567890
   pythonRequirements:
@@ -22,6 +23,7 @@ provider:
   region: us-east-1
   environment:
     CRED_BUCKET: ${self:custom.cred_bucket}
+    LOG_BUCKET: ${self:custom.log_bucket}
     DYNAMODB_TABLE: ${self:custom.table}
     STATE_MACHINE_ARN:
       Ref: PollSSHStepFunctionsStateMachine
@@ -36,6 +38,12 @@ provider:
         - s3:Get*
         - s3:List*
       Resource: "arn:aws:s3:::${self:custom.cred_bucket}/*"
+    - Effect: Allow
+      Action:
+        - s3:Put*
+        - s3:Get*
+        - s3:List*
+      Resource: "arn:aws:s3:::${self:custom.log_bucket}/*"
     - Effect: Allow
       Action:
         - dynamodb:Query
@@ -90,7 +98,7 @@ stepFunctions:
             Choices:
               - Or:
                 - Variable: "$.poll_iteration"
-                  NumericGreaterThanEquals: 10
+                  NumericGreaterThanEquals: 100
 
                 - Variable: "$.complete"
                   BooleanEquals: true
@@ -116,6 +124,12 @@ resources:
       Type: "AWS::S3::Bucket"
       Properties:
         BucketName: ${self:custom.cred_bucket}
+        AccessControl: Private
+
+    LogBucket:
+      Type: "AWS::S3::Bucket"
+      Properties:
+        BucketName: ${self:custom.log_bucket}
         AccessControl: Private
 
     StateTable:
