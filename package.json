@@ -1,0 +1,16 @@
+{
+  "name": "serverless-ssh",
+  "version": "1.0.0",
+  "description": "Some Lambdas for running SSH commands.",
+  "dependencies": {
+    "serverless-step-functions": "^1.0.2",
+    "serverless-python-requirements": "^2.2.1",
+    "serverless": "^1.13.0"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "clean": "./node_modules/.bin/serverless requirements clean"
+  },
+  "author": "",
+  "license": "MIT"
+}

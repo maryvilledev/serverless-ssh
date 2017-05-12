@@ -1,0 +1,138 @@
+service: sssh
+
+frameworkVersion: ">=1.1.0 <2.0.0"
+
+custom:
+  cred_bucket: sssh-key-storage
+  table: sssh-state-table
+  accountId: 1234567890
+  pythonRequirements:
+    dockerizePip: true
+
+package:
+  exclude:
+    - node_modules/**
+    - README.md
+
+provider:
+  name: aws
+  runtime: python3.6
+  profile: maryville
+  stage: beta
+  region: us-east-1
+  environment:
+    CRED_BUCKET: ${self:custom.cred_bucket}
+    DYNAMODB_TABLE: ${self:custom.table}
+    STATE_MACHINE_ARN:
+      Ref: PollSSHStepFunctionsStateMachine
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - states:StartExecution
+        - states:ListStateMachines
+      Resource: arn:aws:states:*:*:stateMachine:PollSSH*
+    - Effect: Allow
+      Action:
+        - s3:Get*
+        - s3:List*
+      Resource: "arn:aws:s3:::${self:custom.cred_bucket}/*"
+    - Effect: Allow
+      Action:
+        - dynamodb:Query
+        - dynamodb:Scan
+        - dynamodb:GetItem
+        - dynamodb:PutItem
+        - dynamodb:UpdateItem
+        - dynamodb:DeleteItem
+        - dynamodb:DescribeStream
+        - dynamodb:GetRecords
+        - dynamodb:GetShardIterator
+        - dynamodb:ListStreams
+      Resource: "arn:aws:dynamodb:${opt:region, self:provider.region}:${self:custom.accountId}:table/${self:custom.table}"
+
+plugins:
+  - serverless-python-requirements
+  - serverless-step-functions
+
+functions:
+  ssh:
+    memorySize: 128
+    handler: handler.run_ssh_command
+    description: Execute SSH commands
+    timeout: 30
+
+  poll:
+    memorySize: 128
+    handler: handler.poll_ssh
+    description: Poll for SSH task completion
+    timeout: 30
+
+  handleFinish:
+    memorySize: 128
+    handler: handler.ssh_completed
+    description: Handle a completed SSH task
+    timeout: 30
+
+stepFunctions:
+  stateMachines:
+    PollSSH:
+      definition:
+        Comment: Poll for completion of a remote SSH task
+        StartAt: CheckTask
+        States:
+          CheckTask:
+            Type: Task
+            Resource: arn:aws:lambda:${opt:region}:${self:custom.accountId}:function:${self:service}-${opt:stage}-poll
+            Next: IsComplete
+
+          IsComplete:
+            Type: Choice
+            Choices:
+              - Or:
+                - Variable: "$.poll_iteration"
+                  NumericGreaterThanEquals: 10
+
+                - Variable: "$.complete"
+                  BooleanEquals: true
+                Next: CompleteTask
+
+              - Variable: "$.complete"
+                BooleanEquals: false
+                Next: WaitTask
+
+          WaitTask:
+            Type: Wait
+            Seconds: 5
+            Next: CheckTask
+
+          CompleteTask:
+            Type: Task
+            Resource: arn:aws:lambda:${opt:region}:${self:custom.accountId}:function:${self:service}-${opt:stage}-handleFinish
+            End: true
+
+resources:
+  Resources:
+    KeyBucket:
+      Type: "AWS::S3::Bucket"
+      Properties:
+        BucketName: ${self:custom.cred_bucket}
+        AccessControl: Private
+
+    StateTable:
+      Type: 'AWS::DynamoDB::Table'
+      DeletionPolicy: Retain
+      Properties:
+        AttributeDefinitions:
+          -
+            AttributeName: id
+            AttributeType: S
+        KeySchema:
+          -
+            AttributeName: id
+            KeyType: HASH
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+        TableName: ${self:custom.table}
+        StreamSpecification:
+          StreamViewType: NEW_IMAGE
